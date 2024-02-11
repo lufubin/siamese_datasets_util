@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <!-- <link rel="stylesheet" href="../statics/layui/css/layui-dark.css" /> -->
+    <link rel="stylesheet" href="../statics/layui/css/layui.css" />
+    <title>孪生神经网络数据集制作工具</title>
+    <script src="../statics/layui/layui.js"></script>
+    <style>
+      *::-webkit-scrollbar {
+        width: 4px;
+        height: 4px;
+        background: transparent;
+      }
+
+      *::-webkit-scrollbar-thumb {
+        background: transparent;
+        border-radius: 4px;
+      }
+
+      *:hover::-webkit-scrollbar-thumb {
+        background: hsla(0, 0%, 53%, 0.4);
+      }
+
+      *:hover::-webkit-scrollbar-track {
+        background: transparent;
+      }
+      .max {
+        height: 97vh;
+        overflow: hidden;
+      }
+      .dir-list {
+        max-height: 100%;
+        overflow-y: auto;
+      }
+      .siamese-imgs {
+        text-align: center;
+      }
+      .siamese-imgs > img {
+        width: 100px; /* 根据实际需求调整图片宽度 */
+        height: 100px; /* 根据实际需求调整图片高度 */
+        object-fit: cover; /* 保持图片的纵横比 */
+        border: 2px solid white;
+      }
+
+      .active {
+        border: 2px solid palevioletred !important;
+      }
+
+      .success {
+        border: 2px solid #16b777 !important;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="progress"></div>
+    <div class="layui-row">
+      <div class="layui-col-xs4 max">
+        <div class="dir-list">
+          <div id="fileTree"></div>
+        </div>
+      </div>
+      <div class="layui-col-xs8 max">
+        <div class="grid-demo grid-demo-bg1">
+          <div class="layui-row" id="img-list"></div>
+          <hr class="ws-space-16" />
+          <div class="layui-row">
+            <div class="layui-btn-container" style="text-align: center">
+              <button type="button" class="layui-btn" id="prev">
+                <i class="layui-icon layui-icon-left"></i>
+              </button>
+              <button
+                type="button"
+                class="layui-btn layui-btn-lg layui-bg-blue layui-btn-radius"
+                id="siameseButton"
+              >
+                标记
+              </button>
+              <button
+                type="button"
+                class="layui-btn layui-btn-lg layui-btn-danger layui-btn-radius"
+                id="delete"
+              >
+                删除
+              </button>
+              <button type="button" class="layui-btn" id="next">
+                <i class="layui-icon layui-icon-right"></i>
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <script>
+      layui.use(() => {
+        const tree = layui.tree;
+        const layer = layui.layer;
+        const util = layui.util;
+        const element = layui.element;
+        const $ = layui.$;
+        let imgIndex = 0;
+        let fileTree = null;
+        let before = -1;
+
+        // 删除按钮
+        $("#delete").on("click", async () => {
+          const srcs = [];
+          $(".siamese-imgs img.active").each(function () {
+            srcs.push($(this).attr("src"));
+          });
+          const result = await window.file.delete(srcs);
+          if (!result.success) {
+            layer.msg(result.error);
+          } else {
+            layer.msg("已删除");
+          }
+          const fileList = await renderImg(fileTree[imgIndex].path);
+          renderTree(imgIndex, fileList);
+        });
+        // 标记按钮点击
+        $("#siameseButton").on("click", async () => {
+          const srcs = [];
+          $(".siamese-imgs img.active").each(function () {
+            srcs.push($(this).attr("src"));
+          });
+          if (srcs.length != 2) {
+            layer.msg("请选择相似的两张图片");
+            return;
+          }
+          const result = await window.file.siamese(srcs);
+          if (!result.success) {
+            layer.msg(result.error);
+          }
+          $(".siamese-imgs img.active")
+            .removeClass("active")
+            .addClass("success");
+        });
+        // 上一个按钮
+        $("#prev").on("click", async () => {
+          if (imgIndex - 1 < 0) {
+            layer.msg("已经是第一个了");
+            return;
+          }
+          imgIndex -= 1;
+          const fileList = await renderImg(fileTree[imgIndex].path);
+          renderProgress();
+          renderTree(imgIndex, fileList);
+          renderScroll();
+        });
+        // 下一个按钮
+        $("#next").on("click", async () => {
+          if (imgIndex + 1 > fileTree.length - 1) {
+            layer.msg("已经是最后一个了");
+            return;
+          }
+          imgIndex += 1;
+          const fileList = await renderImg(fileTree[imgIndex].path);
+          renderProgress();
+          renderTree(imgIndex, fileList);
+          renderScroll();
+        });
+        const renderScroll = () => {
+          document
+            .getElementsByClassName("layui-tree-spread")[0]
+            .scrollIntoView({
+              behavior: "smooth",
+              block: "center",
+            });
+        };
+
+        // 接收消息
+        window.ipcRenderer.on("loadDatasets", async (path) => {
+          imgIndex = 0;
+          const loadIndex = layer.load(1);
+          fileTree = await window.file.tree(path);
+          initTree(fileTree);
+          // 默认取第一个进行图片渲染
+          const fileList = await renderImg(fileTree[imgIndex].path);
+          // 渲染进度条
+          initProgress();
+          // 重新渲染树节点;
+          renderTree(imgIndex, fileList);
+          // 关闭加载
+          layer.close(loadIndex);
+        });
+        // 初始化树形结构
+        const initTree = (data) => {
+          tree.render({
+            elem: "#fileTree",
+            data: data,
+            showLine: true,
+            showCheckbox: false,
+            onlyIconControl: false,
+            click: async (obj) => {
+              const { id, path } = obj.data;
+              imgIndex = id;
+              const fileList = await renderImg(path);
+              renderTree(id, fileList);
+              renderProgress();
+            },
+          });
+        };
+
+        // 渲染树形结构
+        const renderTree = (id, fileList) => {
+          if (before != -1) {
+            fileTree[before].spread = false;
+          }
+          before = id;
+          const childrenList = [];
+          for (const file of fileList) {
+            childrenList.push({
+              title: file,
+            });
+          }
+          fileTree[id].spread = true;
+          fileTree[id].children = childrenList;
+          initTree(fileTree);
+        };
+        // 渲染图片
+        const renderImg = async (path) => {
+          const fileList = await window.file.list(path);
+          let imgs = "";
+          const ele = $("#img-list");
+          ele.empty();
+          for (const file of fileList) {
+            const imgTemplate = `<div class="layui-col-xs4 layui-padding-3">
+                <div class="siamese-imgs">
+                  <img
+                    src="${path}/${file}"
+                  />
+                </div>
+              </div>`;
+            imgs = imgs + imgTemplate;
+          }
+
+          ele.append(imgs);
+          $(".siamese-imgs>img").on("click", (event) => {
+            $(event.currentTarget).toggleClass("active");
+          });
+          return fileList;
+        };
+        // 初始化进度条
+        const initProgress = () => {
+          $("#progress").html(`<div
+        class="layui-progress layui-progress-big"
+        lay-showPercent="true"
+        lay-filter="progress-run"
+      >
+        <div class="layui-progress-bar" lay-percent="1 / ${fileTree.length}"></div>
+      </div>`);
+          element.render("progress", "progress-run");
+        };
+        // 渲染进度条
+        const renderProgress = () => {
+          element.progress(
+            "progress-run",
+            `${imgIndex + 1} / ${fileTree.length}`
+          );
+        };
+      });
+    </script>
+  </body>
+</html>
